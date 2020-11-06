@@ -268,12 +268,42 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct State {
     status: Status,
     last_update: Duration,
     last_check: Check,
     count: u8,
+}
+
+impl State {
+    fn step(&self, since_initialized: Duration, result: Check, config: &Config) -> Self {
+        let mut next = *self;
+        next.last_update = since_initialized;
+
+        if self.last_check != result {
+            next.count = 0;
+        }
+        next.count = next.count.saturating_add(1);
+
+        next.status = if result == Check::Pass
+            && self.status == Status::Unhealthy
+            && next.count >= config.min_successes
+        {
+            Status::Healthy
+        } else if result == Check::Failed
+            && self.status == Status::Healthy
+            && next.count >= config.min_failures
+        {
+            Status::Unhealthy
+        } else {
+            self.status
+        };
+
+        next.last_check = result;
+
+        next
+    }
 }
 
 /// A type that exposes a health check
@@ -375,52 +405,30 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
             delay = sleep(self.config.check_interval);
             let result = self.checkable.check().await;
             let mut state = self.state.lock();
-            state.last_update = self.initialized.elapsed();
-            let prior_status = state.status;
 
-            let error = result.err();
-
-            let this_check = if error.is_none() {
+            let this_check = if result.is_ok() {
                 Check::Pass
             } else {
                 Check::Failed
             };
 
-            if state.last_check != this_check {
-                state.count = 0;
-            }
-            state.count = state.count.saturating_add(1);
+            let last_state = *state;
+            let next_state = state.step(self.initialized.elapsed(), this_check, &self.config);
 
-            let new_status = if this_check == Check::Pass
-                && state.status == Status::Unhealthy
-                && state.count >= self.config.min_successes
-            {
-                Status::Healthy
-            } else if this_check == Check::Failed
-                && state.status == Status::Healthy
-                && state.count >= self.config.min_failures
-            {
-                Status::Unhealthy
-            } else {
-                state.status
-            };
-
-            let count = state.count;
-
-            state.last_check = this_check;
-            state.status = new_status;
+            *state = next_state;
 
             drop(state);
 
+            let error = result.err();
             let module = &*self.checkable.name();
-            match (new_status, &error) {
+            match (next_state.status, &error) {
                 // Report errors while unhealthy and still failing health checks
                 (Status::Unhealthy, Some(error)) => {
                     tracing::error!(
                         error = error as &dyn StdError,
-                        check = ?this_check,
-                        status = ?new_status,
-                        count,
+                        check = ?next_state.last_check,
+                        status = ?next_state.status,
+                        count = next_state.count,
                         module,
                         "healthcheck"
                     );
@@ -429,9 +437,9 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                 (Status::Healthy, Some(error)) => {
                     tracing::warn!(
                         error = error as &dyn StdError,
-                        check = ?this_check,
-                        status = ?new_status,
-                        count,
+                        check = ?next_state.last_check,
+                        status = ?next_state.status,
+                        count = next_state.count,
                         module,
                         "healthcheck"
                     );
@@ -439,19 +447,19 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                 // Report info while unhealthy but passing health checks
                 (Status::Unhealthy, None) => {
                     tracing::info!(
-                        check = ?this_check,
-                        status = ?new_status,
-                        count,
+                        check = ?next_state.last_check,
+                        status = ?next_state.status,
+                        count = next_state.count,
                         module,
                         "healthcheck"
                     );
                 }
                 // Report info if just becoming healthy
-                (Status::Healthy, None) if prior_status == Status::Unhealthy => {
+                (Status::Healthy, None) if last_state.status == Status::Unhealthy => {
                     tracing::info!(
-                        check = ?this_check,
-                        status = ?new_status,
-                        count,
+                        check = ?next_state.last_check,
+                        status = ?next_state.status,
+                        count = next_state.count,
                         module,
                         "healthcheck"
                     );
@@ -459,14 +467,213 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                 // Report debug if healthy and passing health checks
                 (Status::Healthy, None) => {
                     tracing::debug!(
-                        check = ?this_check,
-                        status = ?new_status,
-                        count,
+                        check = ?next_state.last_check,
+                        status = ?next_state.status,
+                        count = next_state.count,
                         module,
                         "healthcheck"
                     );
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_check_success() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(initial, &config, Status::Healthy, 1, vec![Check::Pass]);
+    }
+
+    #[test]
+    fn first_check_failure() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(initial, &config, Status::Healthy, 1, vec![Check::Failed]);
+    }
+
+    #[test]
+    fn first_two_checks_failure() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Healthy,
+            2,
+            vec![Check::Failed, Check::Failed],
+        );
+    }
+
+    #[test]
+    fn first_three_checks_failure() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Unhealthy,
+            3,
+            vec![Check::Failed, Check::Failed, Check::Failed],
+        );
+    }
+
+    #[test]
+    fn first_three_checks_failure_then_one_success() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Unhealthy,
+            1,
+            vec![Check::Failed, Check::Failed, Check::Failed, Check::Pass],
+        );
+    }
+
+    #[test]
+    fn first_three_checks_failure_then_one_success_then_fail() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Unhealthy,
+            1,
+            vec![
+                Check::Failed,
+                Check::Failed,
+                Check::Failed,
+                Check::Pass,
+                Check::Failed,
+            ],
+        );
+    }
+
+    #[test]
+    fn first_three_checks_failure_then_one_success_then_fail_then_pass() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Unhealthy,
+            1,
+            vec![
+                Check::Failed,
+                Check::Failed,
+                Check::Failed,
+                Check::Pass,
+                Check::Failed,
+                Check::Pass,
+            ],
+        );
+    }
+
+    #[test]
+    fn first_three_checks_failure_then_two_success() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Healthy,
+            2,
+            vec![
+                Check::Failed,
+                Check::Failed,
+                Check::Failed,
+                Check::Pass,
+                Check::Pass,
+            ],
+        );
+    }
+
+    #[test]
+    fn first_three_checks_failure_then_two_success_then_fail() {
+        let initial = State { ..State::default() };
+        let config = Config {
+            min_successes: 2,
+            ..Config::default()
+        };
+
+        run_test(
+            initial,
+            &config,
+            Status::Healthy,
+            1,
+            vec![
+                Check::Failed,
+                Check::Failed,
+                Check::Failed,
+                Check::Pass,
+                Check::Pass,
+                Check::Failed,
+            ],
+        );
+    }
+
+    fn run_test(
+        initial: State,
+        config: &Config,
+        expected_status: Status,
+        expected_count: u8,
+        steps: impl IntoIterator<Item = Check>,
+    ) {
+        let mut state = initial;
+        let mut count = 0;
+        let mut last_check = Check::default();
+        for check in steps {
+            count += 1;
+            last_check = check;
+            state = state.step(Duration::from_secs(count), check, config);
+        }
+        let actual = state;
+
+        let expected = State {
+            status: expected_status,
+            count: expected_count,
+            last_update: Duration::from_secs(count),
+            last_check,
+        };
+
+        assert_eq!(expected, actual);
     }
 }
