@@ -1,4 +1,118 @@
 //! A library to assist in reporting on the health of a system.
+//!
+//! ## Usage
+//!
+//! In order to integrate with this library, a module will need to implement
+//! the [`Checkable`][] trait.
+//!
+//! Consumers can implement the [`Checkable`][] trait directly or provide a
+//! function that can perform the health check. Such a function can be either
+//! synchronous or asynchronous.
+//!
+//! ### Synchronous checker
+//!
+//! Synchronous checker functions have the form
+//! `Fn() -> Result<(), Error>` and can be created with
+//! [`check_fn()`](fn.check_fn.html).
+//!
+//! ```
+//! # use std::fmt::Error;
+//! use health::Checkable;
+//!
+//! fn all_is_well() -> Result<(), Error> { Ok(()) }
+//! fn everything_is_fire() -> Result<(), Error> { Err(Error {}) }
+//!
+//! let always_ok = health::check_fn("ok", all_is_well);
+//! let always_bad = health::check_fn("bad", everything_is_fire);
+//! ```
+//!
+//! ### Asynchronous checker
+//!
+//! Asynchronous checker functions have the form
+//! `async Fn() -> Result<(), Error>` and can be created with
+//! [`check_future()`](fn.check_future.html).
+//!
+//! ```
+//! # use std::fmt::Error;
+//! use health::Checkable;
+//!
+//! async fn all_is_well() -> Result<(), Error> { Ok(()) }
+//! async fn everything_is_fire() -> Result<(), Error> { Err(Error {}) }
+//!
+//! let always_ok = health::check_future("ok", all_is_well);
+//! let always_bad = health::check_future("bad", everything_is_fire);
+//! ```
+//!
+//! ### Periodic background health checks
+//!
+//! Once a [`Checkable`][] is created, that can be passed to a
+//! [`PeriodicChecker<C>`][], which implements the [`Reporter`][] trait. The
+//! periodic checker can be configured to define the parameters for reporting
+//! a health status.
+//!
+//! Health checks are performed periodically in the background and not inline
+//! to requests for the current health status. This ensures that information
+//! about the current health status is always available without delay, which
+//! can be particularly important for health checking endpoings on web servers
+//! (such as the oft-seen `/healthz` and `/health` endpoints).
+//!
+//! ## Example
+//!
+//! ```
+//! # use std::fmt::Error;
+//! use std::time::Duration;
+//! use health::Reporter;
+//!
+//! async fn all_is_well() -> Result<(), Error> { Ok(()) }
+//! let always_ok = health::check_future("ok", all_is_well);
+//!
+//! let reporter = health::PeriodicChecker::new(always_ok, health::Config {
+//!     check_interval: Duration::from_secs(10),
+//!     leeway: Duration::from_secs(30),
+//!     min_successes: 2,
+//!     min_failures: 6,
+//! });
+//!
+//! // Spawn the reporter on your executor to perform
+//! // periodic checks in the background
+//! # fn spawn<T>(t: T) {}
+//! spawn(reporter.run());
+//!
+//! assert_eq!(health::Status::Healthy, reporter.raw_status());
+//! assert_eq!(Some(health::Status::Healthy), reporter.status());
+//! assert_eq!(health::Check::Pass, reporter.last_check());
+//! ```
+//!
+//! ## Tracing
+//!
+//! This library makes use of the `tracing` library to report on the health
+//! status of resources using the `health` target. The [`PeriodicChecker<C>`][]
+//! uses the following event levels when reporting the health status after
+//! each check is complete:
+//!
+//! * `ERROR` when the health status is unhealthy, and the most recent check
+//!    failed.
+//! * `WARN` when the health status is healthy, but the most recent check
+//!    failed.
+//! * `INFO` when the health status is unhealthy, but the most recent check
+//!    passed.
+//! * `INFO` for the report when an unhealthy resource becomes healthy.
+//! * `DEBUG` when the health status is healthy, and the most recent check
+//!    passed.
+//!
+//! ## Features
+//!
+//! * `tokio_0_3` (default): Uses `tokio` v0.3 to space out periodic health
+//!    checks
+//! * `tokio_0_2`: Uses `tokio` v0.2 to space out periodic health checks
+//! * `tracing` (default): Uses the `tracing` library to report the results
+//!    of periodic health checks
+//!
+//!   [`Checkable`]: trait.Checkable.html
+//!   [`Reporter`]: trait.Reporter.html
+//!   [`check_fn()`]: fn.check_fn.html
+//!   [`check_future()`]: fn.check_future.html
+//!   [`PeriodicChecker<C>`]: struct.PeriodicChecker.html
 
 #![warn(
     missing_docs,
@@ -45,7 +159,7 @@ pub trait Reporter {
     fn last_check(&self) -> Check;
 }
 
-/// A report of a single health check run
+/// The result of a single health check run on an underlying resource
 ///
 /// Default: `Pass`
 ///
@@ -132,7 +246,8 @@ impl ops::BitXor for Check {
     }
 }
 
-/// The status of a health check, accounting for allowable variance
+/// The health status of resource after accounting for allowable variance in
+/// health check results
 ///
 /// Default: `Healthy`
 ///
@@ -306,7 +421,7 @@ impl State {
     }
 }
 
-/// A type that exposes a health check
+/// A resource whose health can be checked
 #[async_trait]
 pub trait Checkable {
     /// The error reported on a failed health check
@@ -318,11 +433,141 @@ pub trait Checkable {
     /// is interpreted as a failure.
     async fn check(&self) -> Result<(), Self::Error>;
 
-    /// An identifier for the type of the checkable resource
+    /// An identifier for the resource
     fn name(&self) -> Cow<str>;
 }
 
-/// A background healthcheck for checking the health of the MySQL Pool
+/// A wrapper for synchronous functions that can used as a health check
+/// data source
+#[derive(Debug)]
+pub struct FnCheck<F> {
+    name: String,
+    f: F,
+}
+
+impl<F, E> FnCheck<F>
+where
+    F: Fn() -> Result<(), E> + Send + Sync,
+    E: StdError + Send + Sync + 'static,
+{
+    /// Constructs a new checkable from a synchronous function
+    fn new(name: String, f: F) -> Self {
+        Self { name, f }
+    }
+}
+
+#[async_trait]
+impl<F, E> Checkable for FnCheck<F>
+where
+    F: Fn() -> Result<(), E> + Send + Sync,
+    E: StdError + Send + Sync + 'static,
+{
+    type Error = E;
+
+    async fn check(&self) -> Result<(), E> {
+        (self.f)()
+    }
+
+    fn name(&self) -> Cow<str> {
+        Cow::Borrowed(&self.name)
+    }
+}
+
+/// Wraps a synchronous function as a checkable source for health checks
+///
+/// ## Example
+///
+/// ```
+/// # use std::fmt::Error;
+/// # use futures::executor::block_on;
+/// use health::Checkable;
+///
+/// fn all_is_well() -> Result<(), Error> { Ok(()) }
+/// fn everything_is_fire() -> Result<(), Error> { Err(Error {}) }
+///
+/// let always_ok = health::check_fn("ok", all_is_well);
+/// assert_eq!(Ok(()), block_on(always_ok.check()));
+///
+/// let always_err = health::check_fn("err", everything_is_fire);
+/// assert_eq!(Err(Error {}), block_on(always_err.check()));
+/// ```
+pub fn check_fn<F, E>(name: impl Into<String>, f: F) -> FnCheck<F>
+where
+    F: Fn() -> Result<(), E> + Send + Sync,
+    E: StdError + Send + Sync + 'static,
+{
+    FnCheck::new(name.into(), f)
+}
+
+/// A wrapper for asynchronous functions that can used as a health check
+/// data source
+#[derive(Debug)]
+pub struct FutureCheck<F> {
+    name: String,
+    f: F,
+}
+
+impl<F, X, E> FutureCheck<F>
+where
+    F: Fn() -> X + Send + Sync,
+    X: std::future::Future<Output = Result<(), E>> + Send + Sync + 'static,
+    E: StdError + Send + Sync + 'static,
+{
+    /// Constructs a new checkable from an asynchronous function
+    fn new(name: String, f: F) -> Self {
+        Self { name, f }
+    }
+}
+
+#[async_trait]
+impl<F, X, E> Checkable for FutureCheck<F>
+where
+    F: Fn() -> X + Send + Sync,
+    X: std::future::Future<Output = Result<(), E>> + Send + Sync + 'static,
+    E: StdError + Send + Sync + 'static,
+{
+    type Error = E;
+
+    async fn check(&self) -> Result<(), E> {
+        (self.f)().await
+    }
+
+    fn name(&self) -> Cow<str> {
+        Cow::Borrowed(&self.name)
+    }
+}
+
+/// Wraps an asynchronouse function as a checkable source for health checks
+///
+/// ## Example
+///
+/// ```
+/// # use std::fmt::Error;
+/// # use futures::executor::block_on;
+/// use health::Checkable;
+///
+/// async fn all_is_well() -> Result<(), Error> { Ok(()) }
+/// async fn everything_is_fire() -> Result<(), Error> { Err(Error {}) }
+///
+/// let always_ok = health::check_future("ok", all_is_well);
+/// assert_eq!(Ok(()), block_on(always_ok.check()));
+///
+/// let always_err = health::check_future("err", everything_is_fire);
+/// assert_eq!(Err(Error {}), block_on(always_err.check()));
+/// ```
+pub fn check_future<F, X, E>(name: impl Into<String>, f: F) -> FutureCheck<F>
+where
+    F: Fn() -> X + Send + Sync,
+    X: std::future::Future<Output = Result<(), E>> + Send + Sync + 'static,
+    E: StdError + Send + Sync + 'static,
+{
+    FutureCheck::new(name.into(), f)
+}
+
+/// A health reporter that periodically updates its status based on the result
+/// an underlying [`Checkable`][] resource
+///
+///   [`Checkable`]: trait.Checkable.html
 #[derive(Clone, Debug)]
 pub struct PeriodicChecker<C> {
     inner: Arc<PeriodicCheckerInner<C>>,
@@ -351,7 +596,9 @@ impl<C: Checkable> Reporter for PeriodicChecker<C> {
 }
 
 impl<C: Checkable> PeriodicChecker<C> {
-    /// Creates a new health check for the MySQL pool
+    /// Creates a new health check for the [`Checkable`][] resource
+    ///
+    ///   [`Checkable`]: trait.Checkable.html
     pub fn new(checkable: C, config: Config) -> Self {
         Self {
             inner: Arc::new(PeriodicCheckerInner {
@@ -364,8 +611,8 @@ impl<C: Checkable> PeriodicChecker<C> {
     }
 
     /// Begins the health check loop and never returns
-    pub async fn run(self) -> ! {
-        self.inner.run().await
+    pub async fn run(&self) -> ! {
+        self.inner.clone().run().await
     }
 }
 
@@ -412,6 +659,7 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                 Check::Failed
             };
 
+            #[cfg(feature = "tracing")]
             let last_state = *state;
             let next_state = state.step(self.initialized.elapsed(), this_check, &self.config);
 
@@ -419,60 +667,63 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
 
             drop(state);
 
-            let error = result.err();
-            let module = &*self.checkable.name();
-            match (next_state.status, &error) {
-                // Report errors while unhealthy and still failing health checks
-                (Status::Unhealthy, Some(error)) => {
-                    tracing::error!(
-                        error = error as &dyn StdError,
-                        check = ?next_state.last_check,
-                        status = ?next_state.status,
-                        count = next_state.count,
-                        module,
-                        "healthcheck"
-                    );
-                }
-                // Report warnings while healthy but reporting failing health checks
-                (Status::Healthy, Some(error)) => {
-                    tracing::warn!(
-                        error = error as &dyn StdError,
-                        check = ?next_state.last_check,
-                        status = ?next_state.status,
-                        count = next_state.count,
-                        module,
-                        "healthcheck"
-                    );
-                }
-                // Report info while unhealthy but passing health checks
-                (Status::Unhealthy, None) => {
-                    tracing::info!(
-                        check = ?next_state.last_check,
-                        status = ?next_state.status,
-                        count = next_state.count,
-                        module,
-                        "healthcheck"
-                    );
-                }
-                // Report info if just becoming healthy
-                (Status::Healthy, None) if last_state.status == Status::Unhealthy => {
-                    tracing::info!(
-                        check = ?next_state.last_check,
-                        status = ?next_state.status,
-                        count = next_state.count,
-                        module,
-                        "healthcheck"
-                    );
-                }
-                // Report debug if healthy and passing health checks
-                (Status::Healthy, None) => {
-                    tracing::debug!(
-                        check = ?next_state.last_check,
-                        status = ?next_state.status,
-                        count = next_state.count,
-                        module,
-                        "healthcheck"
-                    );
+            #[cfg(feature = "tracing")]
+            {
+                let error = result.err();
+                let module = &*self.checkable.name();
+                match (next_state.status, &error) {
+                    // Report errors while unhealthy and still failing health checks
+                    (Status::Unhealthy, Some(error)) => {
+                        tracing::error!(
+                            error = error as &dyn StdError,
+                            check = ?next_state.last_check,
+                            status = ?next_state.status,
+                            count = next_state.count,
+                            module,
+                            "healthcheck"
+                        );
+                    }
+                    // Report warnings while healthy but reporting failing health checks
+                    (Status::Healthy, Some(error)) => {
+                        tracing::warn!(
+                            error = error as &dyn StdError,
+                            check = ?next_state.last_check,
+                            status = ?next_state.status,
+                            count = next_state.count,
+                            module,
+                            "healthcheck"
+                        );
+                    }
+                    // Report info while unhealthy but passing health checks
+                    (Status::Unhealthy, None) => {
+                        tracing::info!(
+                            check = ?next_state.last_check,
+                            status = ?next_state.status,
+                            count = next_state.count,
+                            module,
+                            "healthcheck"
+                        );
+                    }
+                    // Report info if just becoming healthy
+                    (Status::Healthy, None) if last_state.status == Status::Unhealthy => {
+                        tracing::info!(
+                            check = ?next_state.last_check,
+                            status = ?next_state.status,
+                            count = next_state.count,
+                            module,
+                            "healthcheck"
+                        );
+                    }
+                    // Report debug if healthy and passing health checks
+                    (Status::Healthy, None) => {
+                        tracing::debug!(
+                            check = ?next_state.last_check,
+                            status = ?next_state.status,
+                            count = next_state.count,
+                            module,
+                            "healthcheck"
+                        );
+                    }
                 }
             }
         }

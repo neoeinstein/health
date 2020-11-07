@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: [tokio_0_2, default]
+        features: ['tokio_0_2', 'tokio_0_2,tracing', 'tokio_0_3', default]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v2
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: [tokio_0_2, default]
+        features: ['tokio_0_2', 'tokio_0_2,tracing', 'tokio_0_3', default]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v2
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: [tokio_0_2, default]
+        features: ['tokio_0_2', 'tokio_0_2,tracing', 'tokio_0_3', default]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v2

@@ -10,11 +10,14 @@ license = "MIT/Apache-2.0"
 repository = "https://github.com/neoeinstein/health"
 
 [features]
-default = ["tokio_0_3"]
+default = ["tokio_0_3", "tracing"]
 
 [dependencies]
 async-trait = "0.1.41"
 parking_lot = "0.11"
 tokio_0_2 = { version = "0.2", features = ["time"], package = "tokio", optional = true }
 tokio_0_3 = { version = "0.3", features = ["time"], package = "tokio", optional = true }
-tracing = "0.1.21"
+tracing = { version = "0.1.21", optional = true }
+
+[dev-dependencies]
+futures = "0.3"
