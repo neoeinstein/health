@@ -650,7 +650,11 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
         loop {
             delay.await;
             delay = sleep(self.config.check_interval);
+
+            #[cfg(feature = "tracing")] let check_start = Instant::now();
             let result = self.checkable.check().await;
+            #[cfg(feature = "tracing")] let check_duration = check_start.elapsed();
+
             let mut state = self.state.lock();
 
             let this_check = if result.is_ok() {
@@ -669,60 +673,51 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
 
             #[cfg(feature = "tracing")]
             {
-                let error = result.err();
+                use std::convert::TryFrom;
+
+                let result_err = result.err();
+                let result_as_std_err = result_err.as_ref()
+                    .map(|e| &*e as &dyn StdError);
+                let error: &dyn tracing::Value = result_as_std_err.as_ref()
+                    .map(|e| &*e as &dyn tracing::Value)
+                    .unwrap_or(&tracing::field::Empty);
                 let module = &*self.checkable.name();
-                match (next_state.status, &error) {
-                    // Report errors while unhealthy and still failing health checks
-                    (Status::Unhealthy, Some(error)) => {
-                        tracing::error!(
-                            error = error as &dyn StdError,
+
+                macro_rules! tracing_event {
+                    ($lvl:expr) => {
+                        tracing::event!(
+                            $lvl,
+                            error,
                             check = ?next_state.last_check,
                             status = ?next_state.status,
                             count = next_state.count,
+                            duration = u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
                             module,
                             "healthcheck"
                         );
+                    };
+                }
+
+                match (next_state.status, &result_err) {
+                    // Report errors while unhealthy and still failing health checks
+                    (Status::Unhealthy, Some(_)) => {
+                        tracing_event!(tracing::Level::ERROR);
                     }
                     // Report warnings while healthy but reporting failing health checks
-                    (Status::Healthy, Some(error)) => {
-                        tracing::warn!(
-                            error = error as &dyn StdError,
-                            check = ?next_state.last_check,
-                            status = ?next_state.status,
-                            count = next_state.count,
-                            module,
-                            "healthcheck"
-                        );
+                    (Status::Healthy, Some(_)) => {
+                        tracing_event!(tracing::Level::WARN);
                     }
                     // Report info while unhealthy but passing health checks
                     (Status::Unhealthy, None) => {
-                        tracing::info!(
-                            check = ?next_state.last_check,
-                            status = ?next_state.status,
-                            count = next_state.count,
-                            module,
-                            "healthcheck"
-                        );
+                        tracing_event!(tracing::Level::INFO);
                     }
                     // Report info if just becoming healthy
                     (Status::Healthy, None) if last_state.status == Status::Unhealthy => {
-                        tracing::info!(
-                            check = ?next_state.last_check,
-                            status = ?next_state.status,
-                            count = next_state.count,
-                            module,
-                            "healthcheck"
-                        );
+                        tracing_event!(tracing::Level::INFO);
                     }
                     // Report debug if healthy and passing health checks
                     (Status::Healthy, None) => {
-                        tracing::debug!(
-                            check = ?next_state.last_check,
-                            status = ?next_state.status,
-                            count = next_state.count,
-                            module,
-                            "healthcheck"
-                        );
+                        tracing_event!(tracing::Level::DEBUG);
                     }
                 }
             }
