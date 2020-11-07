@@ -537,7 +537,7 @@ where
     }
 }
 
-/// Wraps an asynchronouse function as a checkable source for health checks
+/// Wraps an asynchronous function as a checkable source for health checks
 ///
 /// ## Example
 ///
