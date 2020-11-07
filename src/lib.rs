@@ -76,7 +76,7 @@
 //! // Spawn the reporter on your executor to perform
 //! // periodic checks in the background
 //! # fn spawn<T>(t: T) {}
-//! spawn(reporter.run());
+//! spawn(reporter.clone().run());
 //!
 //! assert_eq!(health::Status::Healthy, reporter.raw_status());
 //! assert_eq!(Some(health::Status::Healthy), reporter.status());
@@ -128,6 +128,7 @@ use parking_lot::Mutex;
 use std::{
     borrow::Cow,
     error::Error as StdError,
+    fmt,
     ops,
     sync::Arc,
     time::{Duration, Instant},
@@ -568,9 +569,26 @@ where
 /// an underlying [`Checkable`][] resource
 ///
 ///   [`Checkable`]: trait.Checkable.html
-#[derive(Clone, Debug)]
 pub struct PeriodicChecker<C> {
     inner: Arc<PeriodicCheckerInner<C>>,
+}
+
+impl<C> Clone for PeriodicChecker<C> {
+    fn clone(&self) -> Self {
+        PeriodicChecker {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<C> fmt::Debug for PeriodicChecker<C> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("PeriodicChecker")
+            .field("config", &self.inner.config)
+            .field("initialized", &self.inner.initialized)
+            .field("state", &self.inner.state)
+            .finish()
+    }
 }
 
 impl<C: Checkable> Reporter for PeriodicChecker<C> {
@@ -611,12 +629,11 @@ impl<C: Checkable> PeriodicChecker<C> {
     }
 
     /// Begins the health check loop and never returns
-    pub async fn run(&self) -> ! {
-        self.inner.clone().run().await
+    pub async fn run(self) -> ! {
+        self.inner.run().await
     }
 }
 
-#[derive(Debug)]
 struct PeriodicCheckerInner<C> {
     checkable: C,
     initialized: Instant,
@@ -675,19 +692,25 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
             {
                 use std::convert::TryFrom;
 
-                let result_err = result.err();
-                let result_as_std_err = result_err.as_ref()
-                    .map(|e| &*e as &dyn StdError);
-                let error: &dyn tracing::Value = result_as_std_err.as_ref()
-                    .map(|e| &*e as &dyn tracing::Value)
-                    .unwrap_or(&tracing::field::Empty);
+                let error = result.err();
                 let module = &*self.checkable.name();
 
                 macro_rules! tracing_event {
+                    ($lvl:expr, $err:expr) => {
+                        tracing::event!(
+                            $lvl,
+                            error = $err as &dyn StdError,
+                            check = ?next_state.last_check,
+                            status = ?next_state.status,
+                            count = next_state.count,
+                            duration = u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
+                            module,
+                            "healthcheck"
+                        );
+                    };
                     ($lvl:expr) => {
                         tracing::event!(
                             $lvl,
-                            error,
                             check = ?next_state.last_check,
                             status = ?next_state.status,
                             count = next_state.count,
@@ -698,14 +721,14 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                     };
                 }
 
-                match (next_state.status, &result_err) {
+                match (next_state.status, &error) {
                     // Report errors while unhealthy and still failing health checks
-                    (Status::Unhealthy, Some(_)) => {
-                        tracing_event!(tracing::Level::ERROR);
+                    (Status::Unhealthy, Some(e)) => {
+                        tracing_event!(tracing::Level::ERROR, e);
                     }
                     // Report warnings while healthy but reporting failing health checks
-                    (Status::Healthy, Some(_)) => {
-                        tracing_event!(tracing::Level::WARN);
+                    (Status::Healthy, Some(e)) => {
+                        tracing_event!(tracing::Level::WARN, e);
                     }
                     // Report info while unhealthy but passing health checks
                     (Status::Unhealthy, None) => {
