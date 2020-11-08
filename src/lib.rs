@@ -700,8 +700,8 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                         tracing::event!(
                             $lvl,
                             error = $err as &dyn StdError,
-                            check = ?next_state.last_check,
-                            status = ?next_state.status,
+                            passing = next_state.last_check == Check::Pass,
+                            healthy = next_state.status == Status::Healthy,
                             count = next_state.count,
                             duration = u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
                             module,
@@ -711,8 +711,8 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                     ($lvl:expr) => {
                         tracing::event!(
                             $lvl,
-                            check = ?next_state.last_check,
-                            status = ?next_state.status,
+                            passing = next_state.last_check == Check::Pass,
+                            healthy = next_state.status == Status::Healthy,
                             count = next_state.count,
                             duration = u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
                             module,
