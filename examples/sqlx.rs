@@ -29,7 +29,7 @@ async fn healthz(
 }
 
 struct PoolHealthChecker<C> {
-    pool: sqlx::Pool<C>
+    pool: sqlx::Pool<C>,
 }
 
 impl<C> PoolHealthChecker<C> {
@@ -51,7 +51,9 @@ where
 
 impl<C> Clone for PoolHealthChecker<C> {
     fn clone(&self) -> Self {
-        Self { pool: self.pool.clone() }
+        Self {
+            pool: self.pool.clone(),
+        }
     }
 }
 
@@ -73,7 +75,7 @@ where
     }
 }
 
-async fn create_pool(db_url: &str) -> color_eyre::Result<sqlx::MySqlPool>{
+async fn create_pool(db_url: &str) -> color_eyre::Result<sqlx::MySqlPool> {
     Ok(sqlx::MySqlPool::builder()
         .idle_timeout(Some(Duration::from_secs(60)))
         .connect_timeout(Duration::from_secs(5))
@@ -101,8 +103,8 @@ async fn main() -> color_eyre::Result<()> {
 
     HttpServer::new(move || {
         App::new()
-        .app_data(web::Data::new(periodic_check.clone()))
-        .service(healthz)
+            .app_data(web::Data::new(periodic_check.clone()))
+            .service(healthz)
     })
     .bind("127.0.0.1:8080")?
     .run()

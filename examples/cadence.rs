@@ -1,7 +1,10 @@
-use cadence::{MetricClient};
+use cadence::MetricClient;
 use std::fmt;
-use tracing::{field::{Field, Visit}, Event, Metadata, Subscriber};
-use tracing_subscriber::{layer::{Context, Layer, SubscriberExt}};
+use tracing::{
+    field::{Field, Visit},
+    Event, Metadata, Subscriber,
+};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
 #[cfg(feature = "tokio_0_2")]
 use tokio_0_2 as tokio;
@@ -26,8 +29,12 @@ where
         event.record(&mut x);
 
         let explode = match x {
-            HealthCheckMetricsVisitor { duration: Some(d), module: Some(m), passing: Some(p), healthy: Some(h) } =>
-                Some((d, m, p, h)),
+            HealthCheckMetricsVisitor {
+                duration: Some(d),
+                module: Some(m),
+                passing: Some(p),
+                healthy: Some(h),
+            } => Some((d, m, p, h)),
             _ => None,
         };
 
@@ -40,12 +47,14 @@ where
             // self.metrics.gauge(&health_status, if healthy { 1 } else { 0 }).unwrap();
 
             // Datadog format
-            self.metrics.time_with_tags("health", duration)
+            self.metrics
+                .time_with_tags("health", duration)
                 .with_tag("module", &module)
                 .with_tag("passing", if passing { "true" } else { "false" })
                 .with_tag("healthy", if healthy { "true" } else { "false" })
                 .send();
-            self.metrics.gauge_with_tags("health_status", if healthy { 1 } else { 0 })
+            self.metrics
+                .gauge_with_tags("health_status", if healthy { 1 } else { 0 })
                 .with_tag("module", &module)
                 .send();
         } else {
@@ -131,7 +140,7 @@ async fn main() -> color_eyre::Result<()> {
     let client = cadence::StatsdClient::from_sink("my_service", queuing_sink);
 
     let layer = HealthCheckMetricsReporter {
-        metrics: Box::new(client)
+        metrics: Box::new(client),
     };
 
     let subscriber = tracing_subscriber::fmt::Subscriber::builder()
@@ -142,11 +151,14 @@ async fn main() -> color_eyre::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let check = FlakyHealthCheck::default();
-    let periodic_check = health::PeriodicChecker::new(check, health::Config {
-        check_interval: std::time::Duration::from_secs(1),
-        min_successes: 2,
-        ..health::Config::default()
-    });
+    let periodic_check = health::PeriodicChecker::new(
+        check,
+        health::Config {
+            check_interval: std::time::Duration::from_secs(1),
+            min_successes: 2,
+            ..health::Config::default()
+        },
+    );
 
     periodic_check.run().await;
 

@@ -128,8 +128,7 @@ use parking_lot::Mutex;
 use std::{
     borrow::Cow,
     error::Error as StdError,
-    fmt,
-    ops,
+    fmt, ops,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -668,9 +667,11 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
             delay.await;
             delay = sleep(self.config.check_interval);
 
-            #[cfg(feature = "tracing")] let check_start = Instant::now();
+            #[cfg(feature = "tracing")]
+            let check_start = Instant::now();
             let result = self.checkable.check().await;
-            #[cfg(feature = "tracing")] let check_duration = check_start.elapsed();
+            #[cfg(feature = "tracing")]
+            let check_duration = check_start.elapsed();
 
             let mut state = self.state.lock();
 
@@ -703,7 +704,8 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                             passing = next_state.last_check == Check::Pass,
                             healthy = next_state.status == Status::Healthy,
                             count = next_state.count,
-                            duration = u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
+                            duration =
+                                u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
                             module,
                             "healthcheck"
                         );
@@ -714,7 +716,8 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
                             passing = next_state.last_check == Check::Pass,
                             healthy = next_state.status == Status::Healthy,
                             count = next_state.count,
-                            duration = u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
+                            duration =
+                                u64::try_from(check_duration.as_millis()).unwrap_or(u64::MAX),
                             module,
                             "healthcheck"
                         );
