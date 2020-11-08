@@ -22,6 +22,9 @@ tracing = { version = "0.1.21", optional = true }
 [dev-dependencies]
 actix-web = "3.0"
 color-eyre = "0.5"
+cadence = "0.22"
 futures = "0.3"
 sqlx = { version = "0.3", features = ["mysql", "runtime-tokio"], default-features = false }
-tokio_0_2 = { version = "0.2", features = ["rt-core", "time"], package = "tokio" }
+tokio_0_2 = { version = "0.2", features = ["rt-core", "macros", "time"], package = "tokio" }
+tokio_0_3 = { version = "0.3", features = ["rt-multi-thread", "macros", "time"], package = "tokio" }
+tracing-subscriber = "0.2"
