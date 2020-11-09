@@ -80,7 +80,7 @@
 //! #     T: Future + Send + 'static,
 //! #     T::Output: Send + 'static,
 //! # {}
-//! spawn(reporter.run());
+//! spawn(reporter.clone().run());
 //!
 //! assert_eq!(health::Status::Healthy, reporter.raw_status());
 //! assert_eq!(Some(health::Status::Healthy), reporter.status());
@@ -634,6 +634,18 @@ impl<C: Checkable> PeriodicChecker<C> {
     }
 
     /// Begins the health check loop and never returns
+    ///
+    /// This function consumes the checker and begins executing periodic
+    /// checks on the underlying [`Checkable`][]. The returned `Future`
+    /// should not be `.await`ed, as it never completes. Instead, the `Future`
+    /// should be `spawn`ed onto an executor, which will continuously poll the
+    /// `Future` and drive it to work.
+    ///
+    /// As this function consumes the `PeriodicChecker<C>`, it will be cloned
+    /// prior to being passed in so that it can also be passed to some sort of
+    /// reporting function.
+    ///
+    ///   [`Checkable`]: trait.Checkable.html
     pub async fn run(self) -> ! {
         self.inner.run().await
     }
