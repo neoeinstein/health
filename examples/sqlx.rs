@@ -85,13 +85,6 @@ async fn create_pool(db_url: &str) -> color_eyre::Result<sqlx::MySqlPool> {
         .await?)
 }
 
-async fn wrap<C>(p: health::PeriodicChecker<C>)
-where
-    C: health::Checkable,
-{
-    p.run().await;
-}
-
 #[cfg(feature = "tokio_0_2")]
 #[actix_web::main]
 async fn main() -> color_eyre::Result<()> {
@@ -99,7 +92,7 @@ async fn main() -> color_eyre::Result<()> {
     let sql_health_check = PoolHealthChecker::new(pool);
     let periodic_check = health::PeriodicChecker::new(sql_health_check, health::Config::default());
 
-    actix_web::rt::spawn(wrap(periodic_check.clone()));
+    tokio_0_2::spawn(periodic_check.clone().run());
 
     HttpServer::new(move || {
         App::new()
@@ -109,6 +102,7 @@ async fn main() -> color_eyre::Result<()> {
     .bind("127.0.0.1:8080")?
     .run()
     .await?;
+
     Ok(())
 }
 

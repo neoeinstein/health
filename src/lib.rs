@@ -59,7 +59,7 @@
 //! ## Example
 //!
 //! ```
-//! # use std::fmt::Error;
+//! # use std::{fmt::Error, future::Future};
 //! use std::time::Duration;
 //! use health::Reporter;
 //!
@@ -75,8 +75,12 @@
 //!
 //! // Spawn the reporter on your executor to perform
 //! // periodic checks in the background
-//! # fn spawn<T>(t: T) {}
-//! spawn(reporter.clone().run());
+//! # fn spawn<T>(t: T)
+//! # where
+//! #     T: Future + Send + 'static,
+//! #     T::Output: Send + 'static,
+//! # {}
+//! spawn(reporter.run());
 //!
 //! assert_eq!(health::Status::Healthy, reporter.raw_status());
 //! assert_eq!(Some(health::Status::Healthy), reporter.status());
@@ -128,7 +132,9 @@ use parking_lot::Mutex;
 use std::{
     borrow::Cow,
     error::Error as StdError,
-    fmt, ops,
+    fmt,
+    future::Future,
+    ops,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -423,9 +429,9 @@ impl State {
 
 /// A resource whose health can be checked
 #[async_trait]
-pub trait Checkable {
+pub trait Checkable: Send + Sync + 'static {
     /// The error reported on a failed health check
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: StdError + Send + Sync + 'static;
 
     /// The action run to check the current health of the element
     ///
@@ -447,7 +453,7 @@ pub struct FnCheck<F> {
 
 impl<F, E> FnCheck<F>
 where
-    F: Fn() -> Result<(), E> + Send + Sync,
+    F: Fn() -> Result<(), E> + Send + Sync + 'static,
     E: StdError + Send + Sync + 'static,
 {
     /// Constructs a new checkable from a synchronous function
@@ -459,7 +465,7 @@ where
 #[async_trait]
 impl<F, E> Checkable for FnCheck<F>
 where
-    F: Fn() -> Result<(), E> + Send + Sync,
+    F: Fn() -> Result<(), E> + Send + Sync + 'static,
     E: StdError + Send + Sync + 'static,
 {
     type Error = E;
@@ -493,7 +499,7 @@ where
 /// ```
 pub fn check_fn<F, E>(name: impl Into<String>, f: F) -> FnCheck<F>
 where
-    F: Fn() -> Result<(), E> + Send + Sync,
+    F: Fn() -> Result<(), E> + Send + Sync + 'static,
     E: StdError + Send + Sync + 'static,
 {
     FnCheck::new(name.into(), f)
@@ -509,8 +515,8 @@ pub struct FutureCheck<F> {
 
 impl<F, X, E> FutureCheck<F>
 where
-    F: Fn() -> X + Send + Sync,
-    X: std::future::Future<Output = Result<(), E>> + Send + Sync + 'static,
+    F: Fn() -> X + Send + Sync + 'static,
+    X: Future<Output = Result<(), E>> + Send + Sync + 'static,
     E: StdError + Send + Sync + 'static,
 {
     /// Constructs a new checkable from an asynchronous function
@@ -522,8 +528,8 @@ where
 #[async_trait]
 impl<F, X, E> Checkable for FutureCheck<F>
 where
-    F: Fn() -> X + Send + Sync,
-    X: std::future::Future<Output = Result<(), E>> + Send + Sync + 'static,
+    F: Fn() -> X + Send + Sync + 'static,
+    X: Future<Output = Result<(), E>> + Send + Sync + 'static,
     E: StdError + Send + Sync + 'static,
 {
     type Error = E;
@@ -557,8 +563,8 @@ where
 /// ```
 pub fn check_future<F, X, E>(name: impl Into<String>, f: F) -> FutureCheck<F>
 where
-    F: Fn() -> X + Send + Sync,
-    X: std::future::Future<Output = Result<(), E>> + Send + Sync + 'static,
+    F: Fn() -> X + Send + Sync + 'static,
+    X: Future<Output = Result<(), E>> + Send + Sync + 'static,
     E: StdError + Send + Sync + 'static,
 {
     FutureCheck::new(name.into(), f)
@@ -673,6 +679,8 @@ impl<C: Checkable> PeriodicCheckerInner<C> {
             #[cfg(feature = "tracing")]
             let check_duration = check_start.elapsed();
 
+            // Note that we are _not_ holding the mutex across an await point.
+            // Doing so _could_ result in a deadlock.
             let mut state = self.state.lock();
 
             let this_check = if result.is_ok() {
