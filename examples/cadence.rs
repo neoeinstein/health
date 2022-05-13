@@ -1,8 +1,3 @@
-#[cfg(feature = "tokio_0_2")]
-use tokio_0_2 as tokio;
-#[cfg(all(feature = "tokio_0_3", not(feature = "tokio_0_2")))]
-use tokio_0_3 as tokio;
-
 #[cfg(feature = "tracing")]
 mod example {
     use cadence::MetricClient;

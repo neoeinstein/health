@@ -3,9 +3,9 @@
 //! ## Usage
 //!
 //! In order to integrate with this library, a module will need to implement
-//! the [`Checkable`][] trait.
+//! the [`Checkable`] trait.
 //!
-//! Consumers can implement the [`Checkable`][] trait directly or provide a
+//! Consumers can implement the [`Checkable`] trait directly or provide a
 //! function that can perform the health check. Such a function can be either
 //! synchronous or asynchronous.
 //!
@@ -13,7 +13,7 @@
 //!
 //! Synchronous checker functions have the form
 //! `Fn() -> Result<(), Error>` and can be created with
-//! [`check_fn()`](fn.check_fn.html).
+//! [`check_fn()`].
 //!
 //! ```
 //! # use std::fmt::Error;
@@ -30,7 +30,7 @@
 //!
 //! Asynchronous checker functions have the form
 //! `async Fn() -> Result<(), Error>` and can be created with
-//! [`check_future()`](fn.check_future.html).
+//! [`check_future()`].
 //!
 //! ```
 //! # use std::fmt::Error;
@@ -45,8 +45,8 @@
 //!
 //! ### Periodic background health checks
 //!
-//! Once a [`Checkable`][] is created, that can be passed to a
-//! [`PeriodicChecker<C>`][], which implements the [`Reporter`][] trait. The
+//! Once a [`Checkable`] is created, that can be passed to a
+//! [`PeriodicChecker<C>`], which implements the [`Reporter`] trait. The
 //! periodic checker can be configured to define the parameters for reporting
 //! a health status.
 //!
@@ -90,7 +90,7 @@
 //! ## Tracing
 //!
 //! This library makes use of the `tracing` library to report on the health
-//! status of resources using the `health` target. The [`PeriodicChecker<C>`][]
+//! status of resources using the `health` target. The [`PeriodicChecker<C>`]
 //! uses the following event levels when reporting the health status after
 //! each check is complete:
 //!
@@ -106,17 +106,8 @@
 //!
 //! ## Features
 //!
-//! * `tokio_0_3` (default): Uses `tokio` v0.3 to space out periodic health
-//!    checks
-//! * `tokio_0_2`: Uses `tokio` v0.2 to space out periodic health checks
 //! * `tracing` (default): Uses the `tracing` library to report the results
 //!    of periodic health checks
-//!
-//!   [`Checkable`]: trait.Checkable.html
-//!   [`Reporter`]: trait.Reporter.html
-//!   [`check_fn()`]: fn.check_fn.html
-//!   [`check_future()`]: fn.check_future.html
-//!   [`PeriodicChecker<C>`]: struct.PeriodicChecker.html
 
 #![warn(
     missing_docs,
@@ -139,11 +130,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(feature = "tokio_0_2")]
-use tokio_0_2::time::delay_for as sleep;
-
-#[cfg(all(feature = "tokio_0_3", not(feature = "tokio_0_2")))]
-use tokio_0_3::time::sleep;
+use tokio::time::sleep;
 
 /// A health status reporter
 pub trait Reporter {
@@ -481,6 +468,9 @@ where
 
 /// Wraps a synchronous function as a checkable source for health checks
 ///
+/// If this function uses blocking I/O, consider instead using the [`check_future()`]
+/// instead and wrapping the blocking I/O in a call to [`tokio::task::spawn_blocking()`].
+///
 /// ## Example
 ///
 /// ```
@@ -571,9 +561,7 @@ where
 }
 
 /// A health reporter that periodically updates its status based on the result
-/// an underlying [`Checkable`][] resource
-///
-///   [`Checkable`]: trait.Checkable.html
+/// an underlying [`Checkable`] resource
 pub struct PeriodicChecker<C> {
     inner: Arc<PeriodicCheckerInner<C>>,
 }
@@ -619,9 +607,7 @@ impl<C: Checkable> Reporter for PeriodicChecker<C> {
 }
 
 impl<C: Checkable> PeriodicChecker<C> {
-    /// Creates a new health check for the [`Checkable`][] resource
-    ///
-    ///   [`Checkable`]: trait.Checkable.html
+    /// Creates a new health check for the [`Checkable`] resource
     pub fn new(checkable: C, config: Config) -> Self {
         Self {
             inner: Arc::new(PeriodicCheckerInner {
@@ -636,7 +622,7 @@ impl<C: Checkable> PeriodicChecker<C> {
     /// Begins the health check loop and never returns
     ///
     /// This function consumes the checker and begins executing periodic
-    /// checks on the underlying [`Checkable`][]. The returned `Future`
+    /// checks on the underlying [`Checkable`]. The returned `Future`
     /// should not be `.await`ed, as it never completes. Instead, the `Future`
     /// should be `spawn`ed onto an executor, which will continuously poll the
     /// `Future` and drive it to work.
@@ -644,8 +630,6 @@ impl<C: Checkable> PeriodicChecker<C> {
     /// As this function consumes the `PeriodicChecker<C>`, it will be cloned
     /// prior to being passed in so that it can also be passed to some sort of
     /// reporting function.
-    ///
-    ///   [`Checkable`]: trait.Checkable.html
     pub async fn run(self) -> ! {
         self.inner.run().await
     }
